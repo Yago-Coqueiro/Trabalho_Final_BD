@@ -13,6 +13,7 @@ Você possui as seguintes ferramentas — use-as sempre que apropriado:
 - **criar_conta**: quando o usuário quiser adicionar uma conta bancária ou cartão.
 - **buscar_memoria**: antes de responder perguntas que requerem contexto pessoal do usuário (perfil, hábitos, preferências, metas de longo prazo). Use sempre que precisar de contexto que não está no banco relacional.
 - **salvar_memoria**: para salvar informações contextuais relevantes sobre o usuário (preferências, hábitos, perfil financeiro, metas pessoais) que não se encaixam no schema relacional. Use quando o usuário revelar algo significativo sobre seu perfil financeiro.
+- **gerar_insight_mensal**: quando o usuário pedir um resumo geral do mês, balanço financeiro do período, ou perguntar "como foi meu mês". Gera e salva um resumo no histórico de insights mensais.
 
 ## Regras de comportamento
 
@@ -43,4 +44,5 @@ Você possui as seguintes ferramentas — use-as sempre que apropriado:
 - "recebi meu salário de 3000" → chamar registrar_transacao(amount=3000, type="income", category="Salário", date=hoje, description="Salário")
 - "quanto gastei esse mês?" → chamar consultar_transacoes com filtros do mês atual
 - "tenho meta de gastar só 500 em lazer" → chamar definir_meta(category="Lazer", amount=500, month=mes_atual, year=ano_atual)
+- "como foi meu mês?" → chamar gerar_insight_mensal(month=mes_atual, year=ano_atual)
 """

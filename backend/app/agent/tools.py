@@ -112,6 +112,18 @@ TOOL_DECLARATIONS = types.Tool(
                 required=["content"],
             ),
         ),
+        types.FunctionDeclaration(
+            name="gerar_insight_mensal",
+            description="Gera e salva um resumo financeiro do mês (receitas, despesas, categoria com maior gasto, comparação com metas), para consultas como 'como foi meu mês' ou 'me dá um resumo financeiro'.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "month": types.Schema(type=types.Type.INTEGER, description="Mês (1-12). Se omitido, usa o mês atual."),
+                    "year": types.Schema(type=types.Type.INTEGER, description="Ano. Se omitido, usa o ano atual."),
+                },
+                required=[],
+            ),
+        ),
     ]
 )
 
@@ -127,6 +139,7 @@ async def execute_tool(
     handlers = {
         "registrar_transacao": _registrar_transacao,
         "consultar_transacoes": _consultar_transacoes,
+        "gerar_insight_mensal": _gerar_insight_mensal,
         "consultar_metas": _consultar_metas,
         "definir_meta": _definir_meta,
         "criar_conta": _criar_conta,
@@ -283,3 +296,105 @@ async def _salvar_memoria(args: dict, user_id: str, conn: asyncpg.Connection) ->
         uuid.UUID(user_id), mem_type, content, embedding,
     )
     return f"Memória salva ({mem_type})."
+
+
+async def _gerar_insight_mensal(args: dict, user_id: str, conn: asyncpg.Connection) -> str:
+    month = int(args.get("month") or datetime.now().month)
+    year = int(args.get("year") or datetime.now().year)
+    uid = uuid.UUID(user_id)
+
+    # Totais do período
+    totals = await conn.fetchrow(
+        """
+        SELECT
+            COALESCE(SUM(amount) FILTER (WHERE type = 'income'), 0) AS total_income,
+            COALESCE(SUM(amount) FILTER (WHERE type = 'expense'), 0) AS total_expense,
+            COUNT(*) AS transactions_count
+        FROM transactions
+        WHERE user_id = $1
+          AND EXTRACT(MONTH FROM date) = $2
+          AND EXTRACT(YEAR FROM date) = $3
+        """,
+        uid, month, year,
+    )
+
+    total_income = Decimal(str(totals["total_income"]))
+    total_expense = Decimal(str(totals["total_expense"]))
+    transactions_count = int(totals["transactions_count"])
+    saldo = total_income - total_expense
+
+    # Categoria com maior gasto
+    top_cat = await conn.fetchrow(
+        """
+        SELECT c.name, SUM(t.amount) AS total
+        FROM transactions t
+        LEFT JOIN categories c ON c.id = t.category_id
+        WHERE t.user_id = $1
+          AND t.type = 'expense'
+          AND EXTRACT(MONTH FROM t.date) = $2
+          AND EXTRACT(YEAR FROM t.date) = $3
+        GROUP BY c.name
+        ORDER BY total DESC
+        LIMIT 1
+        """,
+        uid, month, year,
+    )
+
+    # Metas do período
+    metas = await conn.fetch(
+        """
+        SELECT c.name AS category_name, bg.amount AS limit_amount,
+               COALESCE(SUM(t.amount), 0) AS spent
+        FROM budget_goals bg
+        LEFT JOIN categories c ON c.id = bg.category_id
+        LEFT JOIN transactions t ON t.category_id = bg.category_id
+            AND t.user_id = bg.user_id
+            AND t.type = 'expense'
+            AND EXTRACT(MONTH FROM t.date) = bg.month
+            AND EXTRACT(YEAR FROM t.date) = bg.year
+        WHERE bg.user_id = $1 AND bg.month = $2 AND bg.year = $3
+        GROUP BY bg.id, c.name, bg.amount
+        """,
+        uid, month, year,
+    )
+
+    # Monta texto do insight
+    mes_nomes = ["janeiro","fevereiro","março","abril","maio","junho",
+                 "julho","agosto","setembro","outubro","novembro","dezembro"]
+    mes_nome = mes_nomes[month - 1]
+
+    if transactions_count == 0:
+        insight = f"Em {mes_nome}/{year}: nenhuma transação registrada no período."
+    else:
+        insight = (
+            f"Em {mes_nome}/{year}: receitas de R${total_income:.2f}, "
+            f"despesas de R${total_expense:.2f} ({transactions_count} transações), "
+            f"saldo de R${saldo:.2f}."
+        )
+        if top_cat:
+            insight += f" Maior gasto: {top_cat['name'] or 'Outros'} (R${top_cat['total']:.2f})."
+        if metas:
+            acima = [r for r in metas if r["spent"] > r["limit_amount"]]
+            dentro = [r for r in metas if r["spent"] <= r["limit_amount"]]
+            if acima:
+                nomes = ", ".join(r["category_name"] or "Geral" for r in acima)
+                insight += f" Acima do orçamento: {nomes}."
+            if dentro:
+                nomes = ", ".join(r["category_name"] or "Geral" for r in dentro)
+                insight += f" Dentro do orçamento: {nomes}."
+
+    await conn.execute(
+        """
+        INSERT INTO monthly_insights (user_id, year, month, insight, transactions_count, total_income, total_expense)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (user_id, year, month) DO UPDATE SET
+            insight = EXCLUDED.insight,
+            transactions_count = EXCLUDED.transactions_count,
+            total_income = EXCLUDED.total_income,
+            total_expense = EXCLUDED.total_expense,
+            created_at = NOW()
+        """,
+        uid, year, month, insight, transactions_count, total_income, total_expense,
+    )
+
+    return f"Insight de {mes_nome}/{year} gerado e salvo: {insight}"
