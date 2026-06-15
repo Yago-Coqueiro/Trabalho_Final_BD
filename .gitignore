@@ -1,0 +1,45 @@
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Ambientes virtuais
+.venv/
+venv/
+env/
+ENV/
+
+# ── Node / Frontend ───────────────────────────────────────────────────────────
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.tsbuildinfo
+
+# ── Variáveis de ambiente (NUNCA versionar) ───────────────────────────────────
+.env
+.env.local
+.env.*.local
+backend/.env
+frontend/.env
+
+# ── IDEs ─────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── SO ───────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Logs / temporários ───────────────────────────────────────────────────────
+*.log
+*.tmp
+*.bak
