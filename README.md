@@ -7,7 +7,7 @@
 [![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)](https://react.dev)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-14+-336791?logo=postgresql&logoColor=white)](https://postgresql.org)
 [![pgvector](https://img.shields.io/badge/pgvector-0.7-336791?logo=postgresql&logoColor=white)](https://github.com/pgvector/pgvector)
-[![Gemini](https://img.shields.io/badge/Google_Gemini-1.5_Flash-4285F4?logo=google&logoColor=white)](https://ai.google.dev)
+[![Gemini](https://img.shields.io/badge/Google_Gemini-3.1_Flash_Lite-4285F4?logo=google&logoColor=white)](https://ai.google.dev)
 
 ---
 
@@ -22,7 +22,7 @@ O sistema demonstra o uso conjunto de **dois paradigmas de banco de dados**:
 | Relacional | PostgreSQL (Cloud SQL) | Dados estruturados: usuários, transações, categorias, metas |
 | Vetorial | pgvector (mesma instância) | Memória semântica do assistente: embeddings de transações e perfil do usuário |
 
-O agente (Google Gemini 1.5 Flash) utiliza **function calling** para decidir quais ferramentas chamar. Nunca acessa o banco diretamente — o backend intermediaz todas as operações.
+O agente (Google Gemini 3.1 Flash Lite) utiliza **function calling** para decidir quais ferramentas chamar. Nunca acessa o banco diretamente — o backend intermedia todas as operações.
 
 ---
 
@@ -48,7 +48,7 @@ https://github.com/Yago-Coqueiro/Trabalho_Final_BD
 │  Routers: /auth  /accounts  /categories  /transactions          │
 │           /budget-goals  /dashboard  /chat                      │
 │                                                                 │
-│  Agent ──► Google Gemini 1.5 Flash (function calling loop)      │
+│  Agent ──► Google Gemini 3.1 Flash Lite (function calling loop)  │
 │  Tools:    registrar_transacao · consultar_transacoes           │
 │            definir_meta · criar_conta · buscar_memoria          │
 │            salvar_memoria · consultar_metas                     │
@@ -328,7 +328,7 @@ Cada usuário ocupa seu próprio "espaço semântico" dentro da mesma tabela, is
 | `uvicorn` | ≥ 0.29 | Servidor ASGI |
 | `asyncpg` | ≥ 0.29 | Driver PostgreSQL assíncrono |
 | `pgvector` | ≥ 0.3 | Suporte a tipos `vector` no asyncpg |
-| `google-generativeai` | ≥ 0.8 | SDK Gemini (chat + embeddings + function calling) |
+| `google-genai` | ≥ 1.0 | SDK Gemini (chat + embeddings + function calling) |
 | `python-jose` | ≥ 3.3 | Geração e validação de JWT |
 | `passlib[bcrypt]` | ≥ 1.7 | Hash de senhas |
 | `pydantic-settings` | ≥ 2.2 | Configuração via variáveis de ambiente |
@@ -353,7 +353,7 @@ Cada usuário ocupa seu próprio "espaço semântico" dentro da mesma tabela, is
 ## Autor
 
 **Yago Coqueiro**  
-Universidade Federal de Goiás — Engenharia de Software  
+Universidade Federal de Goiás — Bacharelado em Inteligência Artificial  
 [coqueiro@discente.ufg.br](mailto:coqueiro@discente.ufg.br)  
 [github.com/Yago-Coqueiro](https://github.com/Yago-Coqueiro)
 

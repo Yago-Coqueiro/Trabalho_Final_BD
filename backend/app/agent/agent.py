@@ -10,46 +10,31 @@ from datetime import date
 from typing import Any
 
 import asyncpg
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 from app.agent.prompts import SYSTEM_PROMPT
 from app.agent.tools import TOOL_DECLARATIONS, execute_tool
 from app.core.config import settings
 
-genai.configure(api_key=settings.gemini_api_key)
+_client = genai.Client(api_key=settings.gemini_api_key)
 
-_model = genai.GenerativeModel(
-    model_name="gemini-3.1-flash-lite",
-    tools=[TOOL_DECLARATIONS],
+_MODEL = "gemini-3.1-flash-lite"
+MAX_TOOL_ROUNDS = 8
+
+_GENERATE_CONFIG = types.GenerateContentConfig(
     system_instruction=SYSTEM_PROMPT,
+    tools=[TOOL_DECLARATIONS],
 )
 
-MAX_TOOL_ROUNDS = 8  # proteção contra loops infinitos
 
-
-def _build_history(messages: list[dict]) -> list[dict]:
-    """Converte histórico do banco (role: user/assistant) para formato Gemini (role: user/model)."""
-    history = []
-    for msg in messages:
+def _build_contents(history: list[dict], user_message: str) -> list[types.Content]:
+    contents: list[types.Content] = []
+    for msg in history:
         role = "model" if msg["role"] == "assistant" else "user"
-        history.append({"role": role, "parts": [{"text": msg["content"]}]})
-    return history
-
-
-def _extract_function_calls(response: Any) -> list[Any]:
-    calls = []
-    try:
-        for part in response.parts:
-            fc = getattr(part, "function_call", None)
-            if fc and fc.name:
-                calls.append(fc)
-    except Exception:
-        pass
-    return calls
-
-
-def _chat_send_sync(chat: Any, payload: Any) -> Any:
-    return chat.send_message(payload)
+        contents.append(types.Content(role=role, parts=[types.Part(text=msg["content"])]))
+    contents.append(types.Content(role="user", parts=[types.Part(text=user_message)]))
+    return contents
 
 
 async def run_agent(
@@ -66,45 +51,39 @@ async def run_agent(
     context_prefix += "]\n\n"
 
     full_message = context_prefix + user_message
-
-    gemini_history = _build_history(history)
-    loop = asyncio.get_event_loop()
-
-    # Inicia chat com histórico
-    chat = _model.start_chat(history=gemini_history)
-
-    # Primeira chamada
-    response = await loop.run_in_executor(
-        None, lambda: chat.send_message(full_message)
-    )
+    contents = _build_contents(history, full_message)
 
     for _ in range(MAX_TOOL_ROUNDS):
-        function_calls = _extract_function_calls(response)
+        response = await _client.aio.models.generate_content(
+            model=_MODEL,
+            contents=contents,
+            config=_GENERATE_CONFIG,
+        )
+
+        candidate = response.candidates[0]
+        # Append model turn to conversation
+        contents.append(candidate.content)
+
+        function_calls = response.function_calls
         if not function_calls:
             break
 
-        # Executa todas as tools da rodada em paralelo
+        # Execute all tool calls in parallel
         results = await asyncio.gather(
-            *[
-                execute_tool(fc.name, dict(fc.args), user_id, conn)
-                for fc in function_calls
-            ]
+            *[execute_tool(fc.name, dict(fc.args), user_id, conn) for fc in function_calls]
         )
 
-        # Monta partes de resposta das functions
-        function_response_parts = [
-            genai.protos.Part(
-                function_response=genai.protos.FunctionResponse(
+        # Append function responses as a single user turn
+        tool_parts = [
+            types.Part(
+                function_response=types.FunctionResponse(
                     name=fc.name,
                     response={"result": result},
                 )
             )
             for fc, result in zip(function_calls, results)
         ]
-
-        response = await loop.run_in_executor(
-            None, lambda: chat.send_message(function_response_parts)
-        )
+        contents.append(types.Content(role="user", parts=tool_parts))
 
     try:
         return response.text

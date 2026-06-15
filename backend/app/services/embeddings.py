@@ -1,33 +1,34 @@
 import asyncio
 from functools import partial
 
-import google.generativeai as genai
 import numpy as np
+from google import genai
+from google.genai import types
 
 from app.core.config import settings
 
-genai.configure(api_key=settings.gemini_api_key)
+_client = genai.Client(api_key=settings.gemini_api_key)
 
-EMBEDDING_MODEL = "models/text-embedding-004"
+EMBEDDING_MODEL = "text-embedding-004"
 EMBEDDING_DIM = 768
 
 
 def _embed_sync(text: str, task_type: str) -> list[float]:
-    result = genai.embed_content(
+    response = _client.models.embed_content(
         model=EMBEDDING_MODEL,
-        content=text,
-        task_type=task_type,
+        contents=text,
+        config=types.EmbedContentConfig(task_type=task_type),
     )
-    return result["embedding"]
+    return response.embeddings[0].values
 
 
 async def embed_document(text: str) -> np.ndarray:
     loop = asyncio.get_event_loop()
-    values = await loop.run_in_executor(None, partial(_embed_sync, text, "retrieval_document"))
+    values = await loop.run_in_executor(None, partial(_embed_sync, text, "RETRIEVAL_DOCUMENT"))
     return np.array(values, dtype=np.float32)
 
 
 async def embed_query(text: str) -> np.ndarray:
     loop = asyncio.get_event_loop()
-    values = await loop.run_in_executor(None, partial(_embed_sync, text, "retrieval_query"))
+    values = await loop.run_in_executor(None, partial(_embed_sync, text, "RETRIEVAL_QUERY"))
     return np.array(values, dtype=np.float32)
