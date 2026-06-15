@@ -19,7 +19,7 @@ from app.core.config import settings
 genai.configure(api_key=settings.gemini_api_key)
 
 _model = genai.GenerativeModel(
-    model_name="gemini-1.5-flash",
+    model_name="gemini-3.1-flash-lite",
     tools=[TOOL_DECLARATIONS],
     system_instruction=SYSTEM_PROMPT,
 )
