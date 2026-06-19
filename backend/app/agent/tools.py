@@ -5,6 +5,7 @@ O LLM decide qual tool chamar; o backend executa a lógica real aqui.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
@@ -15,13 +16,22 @@ from google.genai import types
 
 from app.services.embeddings import embed_document, embed_query
 
+logger = logging.getLogger(__name__)
+
 # ── Declarações das tools para o Gemini ───────────────────────────────────────
 
 TOOL_DECLARATIONS = types.Tool(
     function_declarations=[
         types.FunctionDeclaration(
             name="registrar_transacao",
-            description="Registra uma transação financeira (gasto ou receita) no banco de dados.",
+            description=(
+                "Registra um EVENTO monetário datado que muda o saldo do usuário — algo foi pago, "
+                "recebido ou transferido num momento específico (um gasto, uma receita, um recebimento). "
+                "Use sempre que um valor entrou ou saiu. NÃO use para fatos sobre quem o usuário é ou "
+                "quanto ele costuma ganhar/gastar de forma habitual (isso é salvar_memoria). Uma mesma "
+                "mensagem pode exigir esta tool E salvar_memoria — ex.: 'recebi meu salário de 5000' é um "
+                "recebimento agora E revela a renda habitual."
+            ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
@@ -37,7 +47,11 @@ TOOL_DECLARATIONS = types.Tool(
         ),
         types.FunctionDeclaration(
             name="consultar_transacoes",
-            description="Consulta transações financeiras com filtros opcionais.",
+            description=(
+                "Lê transações já registradas para responder perguntas sobre gastos, receitas, saldo ou "
+                "histórico (ex.: 'quanto gastei', 'meus gastos em julho', 'qual meu saldo'). "
+                "Apenas consulta — nunca registra nem altera."
+            ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
@@ -52,7 +66,7 @@ TOOL_DECLARATIONS = types.Tool(
         ),
         types.FunctionDeclaration(
             name="consultar_metas",
-            description="Consulta as metas/orçamentos definidos pelo usuário.",
+            description="Lê as metas/orçamentos por categoria já definidos e quanto já foi gasto em relação a cada um.",
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
@@ -64,7 +78,7 @@ TOOL_DECLARATIONS = types.Tool(
         ),
         types.FunctionDeclaration(
             name="definir_meta",
-            description="Define ou atualiza uma meta de orçamento para uma categoria num mês/ano.",
+            description="Define ou atualiza um limite de orçamento mensal para uma categoria (ex.: 'quero gastar no máximo 500 em lazer').",
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
@@ -78,7 +92,7 @@ TOOL_DECLARATIONS = types.Tool(
         ),
         types.FunctionDeclaration(
             name="criar_conta",
-            description="Cria uma conta bancária ou cartão para o usuário.",
+            description="Cria uma conta bancária ou cartão para o usuário (origem/destino de valores).",
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
@@ -90,7 +104,11 @@ TOOL_DECLARATIONS = types.Tool(
         ),
         types.FunctionDeclaration(
             name="buscar_memoria",
-            description="Busca por similaridade semântica na memória contextual do usuário.",
+            description=(
+                "Recupera, por similaridade semântica, o que já se sabe sobre o usuário (perfil, hábitos, "
+                "preferências, objetivos). Use para uma busca explícita/aprofundada quando precisar de "
+                "contexto pessoal que ainda não esteja visível. Apenas lê."
+            ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
@@ -102,12 +120,29 @@ TOOL_DECLARATIONS = types.Tool(
         ),
         types.FunctionDeclaration(
             name="salvar_memoria",
-            description="Salva uma informação contextual sobre o usuário na memória semântica.",
+            description=(
+                "Registra um FATO DURADOURO sobre o usuário — quem ele é, como se comporta, o que prefere, "
+                "sua renda ou gastos habituais, seus objetivos. Não muda saldo nem corresponde a um evento "
+                "com data. Use quando o usuário revelar algo significativo sobre si mesmo. NÃO use para um "
+                "gasto/receita pontual com valor e data (isso é registrar_transacao). Uma mesma mensagem "
+                "pode exigir esta tool E registrar_transacao."
+            ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
-                    "content": types.Schema(type=types.Type.STRING, description="Informação em linguagem natural"),
-                    "type": types.Schema(type=types.Type.STRING, enum=["perfil", "meta", "habito", "preferencia", "outro"]),
+                    "content": types.Schema(
+                        type=types.Type.STRING,
+                        description="O fato sobre o usuário, em linguagem natural e em terceira pessoa (ex.: 'Prefere ser chamado de Ivo', 'Tem renda mensal de R$5000').",
+                    ),
+                    "type": types.Schema(
+                        type=types.Type.STRING,
+                        enum=["perfil", "meta", "habito", "preferencia", "outro"],
+                        description=(
+                            "Classifique pelo significado: 'perfil' = identidade/dados estáveis (nome, apelido, "
+                            "profissão, renda habitual); 'meta' = objetivo de longo prazo; 'habito' = padrão de "
+                            "comportamento recorrente; 'preferencia' = gosto ou aversão; 'outro' = não se encaixa nos demais."
+                        ),
+                    ),
                 },
                 required=["content"],
             ),
@@ -192,11 +227,16 @@ async def _registrar_transacao(args: dict, user_id: str, conn: asyncpg.Connectio
     if description:
         content += f" — {description}"
 
-    embedding = await embed_document(content)
-    await conn.execute(
-        "INSERT INTO memory_embeddings (user_id, type, content, embedding, reference_id) VALUES ($1, 'transacao', $2, $3, $4)",
-        uuid.UUID(user_id), content, embedding, uuid.UUID(tx_id),
-    )
+    # O embedding é um índice secundário: a transação já está salva. Se falhar,
+    # registra no log mas NÃO propaga — a ação visível ao usuário teve sucesso.
+    try:
+        embedding = await embed_document(content)
+        await conn.execute(
+            "INSERT INTO memory_embeddings (user_id, type, content, embedding, reference_id) VALUES ($1, 'transacao', $2, $3, $4)",
+            uuid.UUID(user_id), content, embedding, uuid.UUID(tx_id),
+        )
+    except Exception:
+        logger.warning("Falha ao indexar transação %s na memória vetorial", tx_id, exc_info=True)
 
     sign = "+" if tx_type == "income" else "-"
     return f"Transação registrada: {sign}R${amount:.2f} ({category_name or 'Outros'}) em {tx_date.strftime('%d/%m/%Y')}."
@@ -287,10 +327,35 @@ async def _buscar_memoria(args: dict, user_id: str, conn: asyncpg.Connection) ->
     return "\n".join(lines)
 
 
+# Similaridade mínima para tratar duas memórias como o "mesmo fato" e atualizar
+# em vez de duplicar (ex.: apelido repetido, renda que mudou). Conservador.
+_MEMORY_DEDUPE_THRESHOLD = 0.92
+
+
 async def _salvar_memoria(args: dict, user_id: str, conn: asyncpg.Connection) -> str:
     content = args["content"]
     mem_type = args.get("type", "outro")
     embedding = await embed_document(content)
+
+    # Dedupe: se já existe um fato muito similar do mesmo tipo (memória de perfil,
+    # não derivada de transação), atualiza-o em vez de acumular duplicatas.
+    existing = await conn.fetchrow(
+        """
+        SELECT id, 1 - (embedding <=> $1) AS similarity
+        FROM memory_embeddings
+        WHERE user_id = $2 AND type = $3 AND reference_id IS NULL
+        ORDER BY embedding <=> $1
+        LIMIT 1
+        """,
+        embedding, uuid.UUID(user_id), mem_type,
+    )
+    if existing and existing["similarity"] >= _MEMORY_DEDUPE_THRESHOLD:
+        await conn.execute(
+            "UPDATE memory_embeddings SET content = $1, embedding = $2, created_at = NOW() WHERE id = $3",
+            content, embedding, existing["id"],
+        )
+        return f"Memória atualizada ({mem_type})."
+
     await conn.execute(
         "INSERT INTO memory_embeddings (user_id, type, content, embedding) VALUES ($1, $2, $3, $4)",
         uuid.UUID(user_id), mem_type, content, embedding,

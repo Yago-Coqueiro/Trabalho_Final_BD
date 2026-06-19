@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link, useSearchParams } from "react-router-dom";
 import { TrendingUp, BarChart2, Brain, Shield, Eye, EyeOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,18 +8,18 @@ import { useAuth } from "@/hooks/useAuth";
 import { toast } from "@/components/ui/use-toast";
 
 const BRANDING = [
-  { icon: BarChart2, title: "Dashboard Completo", desc: "Visualize suas finanças em gráficos intuitivos" },
-  { icon: Brain,     title: "IA que Classifica",  desc: "Categorização automática de transações" },
-  { icon: Shield,    title: "Seguro & Privado",    desc: "Seus dados protegidos com criptografia" },
+  { icon: BarChart2, label: "Dashboard inteligente" },
+  { icon: Brain,     label: "IA conversacional"     },
+  { icon: Shield,    label: "Seguro & privado"       },
 ];
 
 export default function Auth() {
   const { user, signIn, signUp } = useAuth();
   const navigate = useNavigate();
-  const [isLogin, setIsLogin] = useState(true);
+  const [searchParams] = useSearchParams();
+  const [isLogin, setIsLogin] = useState(searchParams.get("mode") !== "register");
   const [submitting, setSubmitting] = useState(false);
   const [showPass, setShowPass] = useState(false);
-
   const [form, setForm] = useState({ displayName: "", email: "", password: "" });
 
   useEffect(() => {
@@ -50,33 +50,43 @@ export default function Auth() {
   };
 
   return (
-    <div className="flex min-h-screen bg-background">
-      {/* Left branding — hidden on mobile */}
-      <div className="hidden md:flex flex-col justify-center px-12 w-1/2 border-r border-border">
-        <div className="flex items-center gap-2 mb-10">
-          <TrendingUp className="h-8 w-8 text-primary" />
-          <span className="text-3xl font-display font-bold gradient-text">Fluxora</span>
-        </div>
-        <h2 className="text-2xl font-semibold mb-2">Controle financeiro inteligente</h2>
-        <p className="text-muted-foreground mb-10">Gerencie suas finanças com o poder da IA conversacional.</p>
-        <div className="space-y-6">
-          {BRANDING.map(({ icon: Icon, title, desc }) => (
-            <div key={title} className="flex gap-4">
-              <div className="h-10 w-10 rounded-lg gradient-primary flex items-center justify-center shrink-0">
-                <Icon className="h-5 w-5 text-white" />
-              </div>
-              <div>
-                <div className="font-medium">{title}</div>
-                <div className="text-sm text-muted-foreground">{desc}</div>
-              </div>
-            </div>
-          ))}
-        </div>
+    <div className="relative flex min-h-screen items-center justify-center bg-background px-4 overflow-hidden">
+
+      {/* Glow de fundo */}
+      <div className="absolute inset-0 pointer-events-none">
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[700px] h-[700px] rounded-full gradient-primary opacity-[0.07] blur-3xl animate-pulse-glow" />
+        <div className="absolute top-0 right-0 w-[400px] h-[400px] rounded-full bg-primary/5 blur-3xl" />
+        <div className="absolute bottom-0 left-0 w-[300px] h-[300px] rounded-full bg-primary/5 blur-3xl" />
       </div>
 
-      {/* Right form */}
-      <div className="flex flex-1 items-center justify-center px-4">
-        <div className="w-full max-w-md glass rounded-xl p-8 border border-border animate-fade-in">
+      <div className="relative w-full max-w-md animate-fade-in">
+
+        {/* Logo */}
+        <div className="flex flex-col items-center mb-8">
+          <Link to="/" className="flex items-center gap-2 mb-3 hover:opacity-80 transition-opacity">
+            <TrendingUp className="h-8 w-8 text-primary" />
+            <span className="text-4xl font-display font-bold gradient-text">Fluxora</span>
+          </Link>
+          <p className="text-sm text-muted-foreground text-center">
+            Controle financeiro com o poder da IA conversacional
+          </p>
+
+          {/* Chips de funcionalidade */}
+          <div className="flex flex-wrap justify-center gap-2 mt-4">
+            {BRANDING.map(({ icon: Icon, label }) => (
+              <span
+                key={label}
+                className="inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/10 px-3 py-1 text-xs text-primary"
+              >
+                <Icon className="h-3 w-3" />
+                {label}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        {/* Card do formulário */}
+        <div className="glass rounded-2xl border border-border p-8 shadow-2xl">
           <h1 className="text-2xl font-display font-bold mb-1">
             {isLogin ? "Bem-vindo de volta" : "Crie sua conta"}
           </h1>
@@ -125,14 +135,14 @@ export default function Auth() {
                 <button
                   type="button"
                   onClick={() => setShowPass((v) => !v)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
                 >
                   {showPass ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </button>
               </div>
             </div>
 
-            <Button type="submit" className="w-full" disabled={submitting}>
+            <Button type="submit" className="w-full mt-2" disabled={submitting}>
               {submitting ? (
                 <span className="flex items-center gap-2">
                   <span className="h-4 w-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
@@ -142,7 +152,13 @@ export default function Auth() {
             </Button>
           </form>
 
-          <p className="mt-6 text-center text-sm text-muted-foreground">
+          <div className="mt-6 flex items-center gap-3">
+            <div className="flex-1 h-px bg-border" />
+            <span className="text-xs text-muted-foreground">ou</span>
+            <div className="flex-1 h-px bg-border" />
+          </div>
+
+          <p className="mt-4 text-center text-sm text-muted-foreground">
             {isLogin ? "Não tem conta? " : "Já tem conta? "}
             <button
               onClick={() => setIsLogin((v) => !v)}
@@ -152,6 +168,10 @@ export default function Auth() {
             </button>
           </p>
         </div>
+
+        <p className="mt-6 text-center text-xs text-muted-foreground">
+          © 2026 Fluxora · Projeto acadêmico UFG
+        </p>
       </div>
     </div>
   );

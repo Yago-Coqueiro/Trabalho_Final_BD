@@ -62,7 +62,7 @@ export default function Index() {
               <Link to="/auth">Entrar</Link>
             </Button>
             <Button asChild>
-              <Link to="/auth">Criar Conta</Link>
+              <Link to="/auth?mode=register">Criar Conta</Link>
             </Button>
           </div>
         </div>
@@ -87,7 +87,7 @@ export default function Index() {
           </p>
           <div className="flex flex-col sm:flex-row gap-3 justify-center">
             <Button size="lg" asChild>
-              <Link to="/auth">Comece Grátis</Link>
+              <Link to="/auth?mode=register">Comece Grátis</Link>
             </Button>
             <Button size="lg" variant="outline" onClick={scrollToFeatures}>
               Saiba Mais
@@ -170,7 +170,7 @@ export default function Index() {
         </h2>
         <p className="text-white/80 mb-8">Crie sua conta grátis e assuma o controle das suas finanças hoje.</p>
         <Button size="lg" variant="secondary" asChild>
-          <Link to="/auth">Criar conta grátis</Link>
+          <Link to="/auth?mode=register">Criar conta grátis</Link>
         </Button>
       </section>
 
