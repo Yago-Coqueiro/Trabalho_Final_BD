@@ -9,7 +9,7 @@ from app.core.config import settings
 
 _client = genai.Client(api_key=settings.gemini_api_key)
 
-EMBEDDING_MODEL = "text-embedding-004"
+EMBEDDING_MODEL = "gemini-embedding-2"
 EMBEDDING_DIM = 768
 
 
@@ -17,7 +17,7 @@ def _embed_sync(text: str, task_type: str) -> list[float]:
     response = _client.models.embed_content(
         model=EMBEDDING_MODEL,
         contents=text,
-        config=types.EmbedContentConfig(task_type=task_type),
+        config=types.EmbedContentConfig(task_type=task_type, output_dimensionality=EMBEDDING_DIM),
     )
     return response.embeddings[0].values
 

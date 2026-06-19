@@ -16,6 +16,10 @@ import calendar
 import random
 import sys
 import uuid
+
+# Garante saída UTF-8 no Windows
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -35,10 +39,11 @@ from app.services.embeddings import embed_document
 
 # ── Configurações ──────────────────────────────────────────────────────────────
 
-NUM_USERS       = 40
-EMBED_CONCURRENCY = 10   # chamadas simultâneas à API de embedding
-EMBED_DELAY     = 0.05   # segundos de pausa entre chamadas do mesmo lote
-DEMO_PASSWORD   = "demo123"
+NUM_USERS         = 40
+EMBED_CONCURRENCY = 2      # chamadas simultâneas (tier gratuito: 100 req/min)
+EMBED_DELAY       = 1.3    # segundos de pausa mínima entre chamadas (~92 req/min)
+EMBED_MAX_RETRIES = 6      # tentativas em caso de 429
+DEMO_PASSWORD     = "demo123"
 
 # ── Pools de dados ─────────────────────────────────────────────────────────────
 
@@ -235,10 +240,23 @@ def generate_user_list(n: int) -> list[dict]:
 
 
 async def embed_with_limit(text: str, sem: asyncio.Semaphore) -> object:
+    import re
     async with sem:
-        result = await embed_document(text)
-        await asyncio.sleep(EMBED_DELAY)
-        return result
+        for attempt in range(EMBED_MAX_RETRIES):
+            try:
+                result = await embed_document(text)
+                await asyncio.sleep(EMBED_DELAY)
+                return result
+            except Exception as exc:
+                msg = str(exc)
+                if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+                    match = re.search(r"retryDelay.*?(\d+)s", msg)
+                    wait = int(match.group(1)) + 3 if match else 30 * (attempt + 1)
+                    print(f"\n    [rate limit] aguardando {wait}s...", end=" ", flush=True)
+                    await asyncio.sleep(wait)
+                else:
+                    raise
+        raise Exception("Limite de retries atingido para embedding")
 
 
 # ── Seed por usuário ───────────────────────────────────────────────────────────
@@ -394,23 +412,24 @@ async def seed_user(
         mes_nomes = ["janeiro","fevereiro","março","abril","maio","junho",
                      "julho","agosto","setembro","outubro","novembro","dezembro"]
 
-        async def embed_tx(tx: dict) -> None:
-            nonlocal embed_count
+        async def build_tx_content(tx: dict) -> tuple[str, object, uuid.UUID]:
             tipo_str = "Receita" if tx["type"] == "income" else "Despesa"
             data_str = tx["date"].strftime("%d/%m/%Y")
             content = f"{tipo_str} de R${tx['amount']:.2f} em {tx['category']}: {tx['description']}, em {data_str}"
             emb = await embed_with_limit(content, sem)
-            await conn.execute(
-                "INSERT INTO memory_embeddings (user_id, type, content, embedding, reference_id) VALUES ($1,'transacao',$2,$3,$4)",
-                user_id, content, emb, tx["id"],
-            )
-            embed_count += 1
+            return content, emb, tx["id"]
 
-        # Embeddings em lotes para não sobrecarregar
+        # Gera embeddings em paralelo, depois escreve no banco sequencialmente
         batch_size = EMBED_CONCURRENCY * 2
         for i in range(0, len(all_tx), batch_size):
             batch = all_tx[i:i + batch_size]
-            await asyncio.gather(*[embed_tx(tx) for tx in batch])
+            results = await asyncio.gather(*[build_tx_content(tx) for tx in batch])
+            for content, emb, ref_id in results:
+                await conn.execute(
+                    "INSERT INTO memory_embeddings (user_id, type, content, embedding, reference_id) VALUES ($1,'transacao',$2,$3,$4)",
+                    user_id, content, emb, ref_id,
+                )
+                embed_count += 1
 
         # ── Memórias adicionais ───────────────────────────────────────────────
         n_extra = random.randint(2, 4)
@@ -441,8 +460,11 @@ async def seed_user(
                 f"Meta: gastar no máximo R${g_amount:.2f} com {g_cat} em {mes_nomes[g_month-1]}/{g_year}.",
             ))
 
-        for mem_type, mem_content in extra_memories:
-            emb = await embed_with_limit(mem_content, sem)
+        # Gera embeddings de memória em paralelo, depois escreve sequencialmente
+        mem_results = await asyncio.gather(*[
+            embed_with_limit(mem_content, sem) for _, mem_content in extra_memories
+        ])
+        for (mem_type, mem_content), emb in zip(extra_memories, mem_results):
             await conn.execute(
                 "INSERT INTO memory_embeddings (user_id, type, content, embedding) VALUES ($1,$2,$3,$4)",
                 user_id, mem_type, mem_content, emb,
