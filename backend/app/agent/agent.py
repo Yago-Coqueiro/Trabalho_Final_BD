@@ -88,7 +88,9 @@ async def run_agent(
         context_prefix += f", usuário = {user_display_name}"
     context_prefix += "]\n"
 
-    grounding = await _retrieve_relevant_memories(user_message, user_id, conn)
+    grounding = ""
+    if settings.agent_grounding:
+        grounding = await _retrieve_relevant_memories(user_message, user_id, conn)
     if grounding:
         context_prefix += grounding + "\n"
     context_prefix += "\n"
