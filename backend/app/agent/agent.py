@@ -5,6 +5,7 @@ Usa Gemini com function calling em loop até obter resposta textual final.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import date
@@ -13,9 +14,11 @@ import asyncpg
 from google import genai
 from google.genai import types
 
+from app.agent.adk_runtime import run_with_adk
 from app.agent.prompts import SYSTEM_PROMPT
 from app.agent.tools import TOOL_DECLARATIONS, execute_tool
 from app.core.config import settings
+from app.core.telemetry import set_content, tracer
 from app.services.embeddings import embed_query
 
 logger = logging.getLogger(__name__)
@@ -44,26 +47,30 @@ async def _retrieve_relevant_memories(
 
     Best-effort: qualquer falha (cota da API, embedding) retorna vazio sem quebrar o chat.
     """
-    try:
-        embedding = await embed_query(user_message)
-        rows = await conn.fetch(
-            """
-            SELECT content, 1 - (embedding <=> $1) AS similarity
-            FROM memory_embeddings
-            WHERE user_id = $2 AND embedding IS NOT NULL
-            ORDER BY embedding <=> $1
-            LIMIT $3
-            """,
-            embedding, uuid.UUID(user_id), GROUNDING_TOP_K,
-        )
-    except Exception:
-        logger.warning("Grounding de memória falhou; seguindo sem contexto recuperado", exc_info=True)
-        return ""
+    with tracer.start_as_current_span("agent.grounding") as span:
+        try:
+            embedding = await embed_query(user_message)
+            rows = await conn.fetch(
+                """
+                SELECT content, 1 - (embedding <=> $1) AS similarity
+                FROM memory_embeddings
+                WHERE user_id = $2 AND embedding IS NOT NULL
+                ORDER BY embedding <=> $1
+                LIMIT $3
+                """,
+                embedding, uuid.UUID(user_id), GROUNDING_TOP_K,
+            )
+        except Exception:
+            logger.warning("Grounding de memória falhou; seguindo sem contexto recuperado", exc_info=True)
+            span.set_attribute("grounding.failed", True)
+            return ""
 
-    relevant = [r["content"] for r in rows if r["similarity"] >= GROUNDING_MIN_SIMILARITY]
-    if not relevant:
-        return ""
-    return "[O que já sei sobre o usuário: " + "; ".join(relevant) + "]"
+        relevant = [r["content"] for r in rows if r["similarity"] >= GROUNDING_MIN_SIMILARITY]
+        span.set_attribute("grounding.candidates", len(rows))
+        span.set_attribute("grounding.retrieved_count", len(relevant))
+        if not relevant:
+            return ""
+        return "[O que já sei sobre o usuário: " + "; ".join(relevant) + "]"
 
 
 def _build_contents(history: list[dict], user_message: str) -> list[types.Content]:
@@ -82,36 +89,71 @@ async def run_agent(
     conn: asyncpg.Connection,
     user_display_name: str | None = None,
 ) -> str:
-    today = date.today().strftime("%d/%m/%Y")
-    context_prefix = f"[Contexto: data de hoje = {today}"
-    if user_display_name:
-        context_prefix += f", usuário = {user_display_name}"
-    context_prefix += "]\n"
+    with tracer.start_as_current_span("agent.run_agent") as root_span:
+        root_span.set_attribute("enduser.id", user_id)
+        root_span.set_attribute("agent.grounding_enabled", settings.agent_grounding)
+        root_span.set_attribute("agent.engine", settings.agent_engine)
+        set_content(root_span, "agent.user_message", user_message)
 
-    grounding = ""
-    if settings.agent_grounding:
-        grounding = await _retrieve_relevant_memories(user_message, user_id, conn)
-    if grounding:
-        context_prefix += grounding + "\n"
-    context_prefix += "\n"
+        today = date.today().strftime("%d/%m/%Y")
+        context_prefix = f"[Contexto: data de hoje = {today}"
+        if user_display_name:
+            context_prefix += f", usuário = {user_display_name}"
+        context_prefix += "]\n"
 
-    full_message = context_prefix + user_message
+        grounding = ""
+        if settings.agent_grounding:
+            grounding = await _retrieve_relevant_memories(user_message, user_id, conn)
+        if grounding:
+            context_prefix += grounding + "\n"
+        context_prefix += "\n"
+
+        full_message = context_prefix + user_message
+
+        # Motor ADK (padrão): o loop de function calling é conduzido pelo Google ADK.
+        # O Lock por request serializa as tools que o ADK pode disparar em paralelo,
+        # preservando a garantia de acesso sequencial à conexão asyncpg.
+        if settings.agent_engine == "adk":
+            return await run_with_adk(full_message, history, user_id, conn, asyncio.Lock())
+
+        # Motor legado: loop de function calling manual sobre google-genai.
+        return await _run_legacy_loop(full_message, history, user_id, conn)
+
+
+async def _run_legacy_loop(
+    full_message: str,
+    history: list[dict],
+    user_id: str,
+    conn: asyncpg.Connection,
+) -> str:
     contents = _build_contents(history, full_message)
 
-    for _ in range(MAX_TOOL_ROUNDS):
-        response = await _client.aio.models.generate_content(
-            model=_MODEL,
-            contents=contents,
-            config=_GENERATE_CONFIG,
-        )
+    for round_num in range(1, MAX_TOOL_ROUNDS + 1):
+        with tracer.start_as_current_span("gemini.generate_content") as gen_span:
+            gen_span.set_attribute("gen_ai.system", "gemini")
+            gen_span.set_attribute("gen_ai.request.model", _MODEL)
+            gen_span.set_attribute("gen_ai.round", round_num)
 
-        candidate = response.candidates[0]
-        # Append model turn to conversation
-        contents.append(candidate.content)
+            response = await _client.aio.models.generate_content(
+                model=_MODEL,
+                contents=contents,
+                config=_GENERATE_CONFIG,
+            )
 
-        function_calls = response.function_calls
-        if not function_calls:
-            break
+            candidate = response.candidates[0]
+            # Append model turn to conversation
+            contents.append(candidate.content)
+
+            function_calls = response.function_calls
+            if not function_calls:
+                gen_span.set_attribute("gen_ai.response.finish", "text")
+                break
+
+            # Evidência central da pipeline: quais tools o modelo decidiu acionar.
+            gen_span.set_attribute("gen_ai.response.finish", "tool_calls")
+            gen_span.set_attribute(
+                "gen_ai.response.tool_calls", [fc.name for fc in function_calls]
+            )
 
         # Executa as tool calls SEQUENCIALMENTE: todas compartilham a mesma conexão
         # asyncpg (uma por request) e asyncpg não permite operações concorrentes na
