@@ -314,9 +314,13 @@ async def _criar_conta(args: dict, user_id: str, conn: asyncpg.Connection) -> st
 
 
 async def _buscar_memoria(args: dict, user_id: str, conn: asyncpg.Connection) -> str:
-    embedding = await embed_query(args["query"])
+    try:
+        embedding = await embed_query(args["query"])
+    except Exception:
+        logger.warning("Embedding indisponível para busca de memória", exc_info=True)
+        return "Memória temporariamente indisponível (limite de uso da API)."
     rows = await conn.fetch(
-        "SELECT content, type, 1 - (embedding <=> $1) AS similarity FROM memory_embeddings WHERE user_id = $2 ORDER BY embedding <=> $1 LIMIT $3",
+        "SELECT content, type, 1 - (embedding <=> $1) AS similarity FROM memory_embeddings WHERE user_id = $2 AND embedding IS NOT NULL ORDER BY embedding <=> $1 LIMIT $3",
         embedding, uuid.UUID(user_id), int(args.get("limit", 5)),
     )
     if not rows:
@@ -335,7 +339,19 @@ _MEMORY_DEDUPE_THRESHOLD = 0.92
 async def _salvar_memoria(args: dict, user_id: str, conn: asyncpg.Connection) -> str:
     content = args["content"]
     mem_type = args.get("type", "outro")
-    embedding = await embed_document(content)
+
+    # Embedding indisponível (ex.: cota da API esgotada): preserva o fato com vetor
+    # NULL em vez de falhar. Fica fora da busca/dedupe até um backfill futuro, mas a
+    # informação não se perde e o agente não reporta falha indevida.
+    try:
+        embedding = await embed_document(content)
+    except Exception:
+        logger.warning("Embedding indisponível; salvando memória sem vetor", exc_info=True)
+        await conn.execute(
+            "INSERT INTO memory_embeddings (user_id, type, content) VALUES ($1, $2, $3)",
+            uuid.UUID(user_id), mem_type, content,
+        )
+        return f"Memória salva ({mem_type})."
 
     # Dedupe: se já existe um fato muito similar do mesmo tipo (memória de perfil,
     # não derivada de transação), atualiza-o em vez de acumular duplicatas.
