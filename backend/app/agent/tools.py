@@ -5,6 +5,7 @@ O LLM decide qual tool chamar; o backend executa a lógica real aqui.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import date, datetime
@@ -13,7 +14,9 @@ from typing import Any
 
 import asyncpg
 from google.genai import types
+from opentelemetry.trace import Status, StatusCode
 
+from app.core.telemetry import set_content, tracer
 from app.services.embeddings import embed_document, embed_query
 
 logger = logging.getLogger(__name__)
@@ -181,13 +184,23 @@ async def execute_tool(
         "buscar_memoria": _buscar_memoria,
         "salvar_memoria": _salvar_memoria,
     }
-    handler = handlers.get(name)
-    if not handler:
-        return f"Ferramenta '{name}' não reconhecida."
-    try:
-        return await handler(args, user_id, conn)
-    except Exception as exc:
-        return f"Erro ao executar '{name}': {exc}"
+    with tracer.start_as_current_span(f"tool.{name}") as span:
+        span.set_attribute("gen_ai.tool.name", name)
+        set_content(span, "tool.args", json.dumps(args, default=str, ensure_ascii=False))
+
+        handler = handlers.get(name)
+        if not handler:
+            span.set_status(Status(StatusCode.ERROR, "tool não reconhecida"))
+            return f"Ferramenta '{name}' não reconhecida."
+        try:
+            result = await handler(args, user_id, conn)
+            set_content(span, "tool.result", result)
+            span.set_status(Status(StatusCode.OK))
+            return result
+        except Exception as exc:
+            span.record_exception(exc)
+            span.set_status(Status(StatusCode.ERROR, str(exc)))
+            return f"Erro ao executar '{name}': {exc}"
 
 
 async def _resolve_category_id(category_name: str | None, user_id: str, conn: asyncpg.Connection) -> str | None:

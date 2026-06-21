@@ -6,6 +6,7 @@ from google import genai
 from google.genai import types
 
 from app.core.config import settings
+from app.core.telemetry import set_content, tracer
 
 _client = genai.Client(api_key=settings.gemini_api_key)
 
@@ -25,13 +26,24 @@ def _embed_sync(text: str, task_type: str) -> list[float]:
     return response.embeddings[0].values
 
 
+# Spans criados nos wrappers async (event loop) e não em _embed_sync (thread do
+# executor), onde o contexto OTel não se propaga automaticamente — assim a relação
+# pai/filho no trace fica correta.
 async def embed_document(text: str) -> np.ndarray:
-    loop = asyncio.get_event_loop()
-    values = await loop.run_in_executor(None, partial(_embed_sync, text, "RETRIEVAL_DOCUMENT"))
-    return np.array(values, dtype=np.float32)
+    with tracer.start_as_current_span("gemini.embed_content") as span:
+        span.set_attribute("gen_ai.request.model", EMBEDDING_MODEL)
+        span.set_attribute("gen_ai.embed.task_type", "RETRIEVAL_DOCUMENT")
+        set_content(span, "gen_ai.embed.text", text)
+        loop = asyncio.get_event_loop()
+        values = await loop.run_in_executor(None, partial(_embed_sync, text, "RETRIEVAL_DOCUMENT"))
+        return np.array(values, dtype=np.float32)
 
 
 async def embed_query(text: str) -> np.ndarray:
-    loop = asyncio.get_event_loop()
-    values = await loop.run_in_executor(None, partial(_embed_sync, text, "RETRIEVAL_QUERY"))
-    return np.array(values, dtype=np.float32)
+    with tracer.start_as_current_span("gemini.embed_content") as span:
+        span.set_attribute("gen_ai.request.model", EMBEDDING_MODEL)
+        span.set_attribute("gen_ai.embed.task_type", "RETRIEVAL_QUERY")
+        set_content(span, "gen_ai.embed.text", text)
+        loop = asyncio.get_event_loop()
+        values = await loop.run_in_executor(None, partial(_embed_sync, text, "RETRIEVAL_QUERY"))
+        return np.array(values, dtype=np.float32)

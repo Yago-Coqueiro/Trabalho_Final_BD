@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
+from app.core.telemetry import setup_telemetry
 from app.db.connection import close_pool, create_pool
 from app.routers import (
     accounts,
@@ -14,6 +15,10 @@ from app.routers import (
     dashboard,
     transactions,
 )
+
+# Antes de criar o app e o pool: garante que o patch do asyncpg esteja ativo
+# quando create_pool() rodar no lifespan. No-op se OTEL_ENABLED=false.
+setup_telemetry()
 
 
 @asynccontextmanager
@@ -28,6 +33,11 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+if settings.otel_enabled:
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+    FastAPIInstrumentor.instrument_app(app)
 
 app.add_middleware(
     CORSMiddleware,
