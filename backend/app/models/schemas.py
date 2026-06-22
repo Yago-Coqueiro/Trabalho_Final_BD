@@ -157,19 +157,19 @@ class CategoryBreakdown(BaseModel):
     category_id: UUID | None
     category_name: str
     category_color: str
-    total: Decimal
+    total: float
 
 
 class DailyPoint(BaseModel):
     date: date
-    income: Decimal
-    expense: Decimal
+    income: float
+    expense: float
 
 
 class DashboardSummary(BaseModel):
-    balance: Decimal
-    total_income: Decimal
-    total_expense: Decimal
+    balance: float
+    total_income: float
+    total_expense: float
     transaction_count: int
     category_breakdown: list[CategoryBreakdown]
     daily_evolution: list[DailyPoint]
